@@ -11,6 +11,7 @@ from random import randint
 class AutoRuParser:
     def __init__(self):
         # https://stackoverflow.com/questions/61114980/can-selenium-automation-be-used-with-bs4
+        #https: // docs.python.org / 3 / library / logging.html
         self.logger = logging.getLogger(__name__)
         self.driver = webdriver.Chrome()
         self.main_page_url = "https://www.auto.ru/moskva/cars/all/?page="
@@ -88,13 +89,16 @@ class AutoRuParser:
         }
 
 
-    def get_page(self, page_num=0, first_time=True):
-        self.driver.get(self.main_page_url+str(page_num))
-        if first_time:
-            time.sleep(15)
-        else:
-            time.sleep(3)
-        page = bs4.BeautifulSoup(self.driver.page_source, "html.parser")
+    def get_page(self, page_num=0, first_time=True, parsed_page=None):
+        if parsed_page==None:
+            self.driver.get(self.main_page_url+str(page_num))
+            if first_time:
+                time.sleep(15)
+            else:
+                time.sleep(3)
+            page = bs4.BeautifulSoup(self.driver.page_source, "html.parser")
+        if parsed_page:
+            page = bs4.BeautifulSoup(parsed_page, "html.parser")
         cards = page.find_all("div", class_=re.compile("ListingItemUniversal-"))
         res = []
         for card in cards:
@@ -107,11 +111,13 @@ class AutoRuParser:
             for j in i:
                 list_to_pandas.append(j)
         df = pd.DataFrame(list_to_pandas)
+        df.drop_duplicates(["link"], inplace=True)
         df.to_csv(f, index=False, encoding="utf-8")
 
-    def parse_to_dataframe(self, start_page, end_page):
+    def parse_to_dataframe(self, start_page, end_page, scrolls=500):
         final_list = []
         final_list.append(self.get_page(start_page, True))
+        is_last_page = False
         try:
             for i in range(start_page+1, end_page+1):
                 page = self.get_page(i, False)
@@ -121,9 +127,30 @@ class AutoRuParser:
                 else:
                     self.logger.warning(f"Page {i} of {end_page} not parsed")
                     continue
+                if i==99:
+                    is_last_page = True
+                    break
+            while is_last_page and scrolls > 0:
+                self.logger.info(f"Infinite scrolling started on last page: {scrolls}")
+                #To perform smooth scroll that is not detected: https://developer.mozilla.org/en-US/docs/Web/API/Window/scrollBy
+                #https: // www.geeksforgeeks.org / software - testing / selenium - scrolling - a - web - page /
+                #https://stackoverflow.com/questions/20986631/how-can-i-scroll-a-web-page-using-selenium-webdriver-in-python#27760083
+                #mess around with website protection to get all elements from last page with infinite scrolling
+                time.sleep(randint(5,30)/10)
+                self.driver.execute_script("window.scrollBy({top:"+str(randint(400,900))+",left:0, behaviour:'smooth'})")
+                chance = randint(0,100)
+                time.sleep(randint(4,15)/10)
+                if chance>50:
+                    self.driver.execute_script("window.scrollBy({top:"+str(randint(-100,-50))+",left:0, behaviour:'smooth'})")
+                if scrolls%11==0:
+                    page = self.get_page(parsed_page=self.driver.page_source)
+                    final_list.append(page)
+
+                scrolls -= 1
         except Exception as e:
             self.logger.error(f"Critical error while parsing: {e}")
         finally:
+            self.logger.info(f"Parser have finished with the number of parsed pages: f{len(final_list)}")
             self.save_backup(final_list,"cars_data.csv")
 
 
@@ -131,6 +158,6 @@ class AutoRuParser:
 
 if __name__ == "__main__":
     a = AutoRuParser()
-    a.parse_to_dataframe(start_page=0,end_page=3)
+    a.parse_to_dataframe(start_page=0,end_page=98)
 
 

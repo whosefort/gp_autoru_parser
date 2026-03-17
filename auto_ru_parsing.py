@@ -8,13 +8,15 @@ import time
 from selenium import webdriver
 from random import randint
 
+logging.basicConfig(filename='auto_ru_parser.log', level=logging.INFO)
+
 class AutoRuParser:
     def __init__(self):
         # https://stackoverflow.com/questions/61114980/can-selenium-automation-be-used-with-bs4
         #https: // docs.python.org / 3 / library / logging.html
         self.logger = logging.getLogger(__name__)
         self.driver = webdriver.Chrome()
-        self.main_page_url = "https://www.auto.ru/moskva/cars/all/?page="
+
 
     def parse_car_html(self, card):
         card_name_el  = card.find('a', class_=re.compile("ListingItemTitle__link"))
@@ -89,16 +91,18 @@ class AutoRuParser:
         }
 
 
-    def get_page(self, page_num=0, first_time=True, parsed_page=None):
-        if parsed_page==None:
-            self.driver.get(self.main_page_url+str(page_num))
+    def get_page(self, city="moskva", page_num=0, first_time=True, page_source=None):
+        main_page_url = f"https://www.auto.ru/{city}/cars/all/?page="
+        if page_source==None:
+            self.driver.get(main_page_url+str(page_num))
             if first_time:
-                time.sleep(15)
+                time.sleep(10)
             else:
-                time.sleep(3)
+                time.sleep(randint(15,30)/10)
             page = bs4.BeautifulSoup(self.driver.page_source, "html.parser")
-        if parsed_page:
-            page = bs4.BeautifulSoup(parsed_page, "html.parser")
+        elif page_source:
+            page = bs4.BeautifulSoup(page_source, "html.parser")
+
         cards = page.find_all("div", class_=re.compile("ListingItemUniversal-"))
         res = []
         for card in cards:
@@ -107,22 +111,30 @@ class AutoRuParser:
 
     def save_backup(self, data, f):
         list_to_pandas  = []
-        for i  in data:
-            for j in i:
-                list_to_pandas.append(j)
+        for card in data:
+            list_to_pandas.append(card)
         df = pd.DataFrame(list_to_pandas)
-        df.drop_duplicates(["link"], inplace=True)
+        try:
+            df.drop_duplicates(["link"], inplace=True)
+        except:
+            pass
         df.to_csv(f, index=False, encoding="utf-8")
 
-    def parse_to_dataframe(self, start_page, end_page, scrolls=500):
+    def parse_to_dataframe(self, start_page, end_page, f="cars_dats.csv", city="moskva"):
         final_list = []
-        final_list.append(self.get_page(start_page, True))
-        is_last_page = False
+        existing_lots_links = set()
+        if start_page!=99:
+            is_last_page = False
+        elif start_page==99:
+            is_last_page = True
         try:
-            for i in range(start_page+1, end_page+1):
-                page = self.get_page(i, False)
+            for i in range(start_page, end_page+1):
+                page = self.get_page(city, i, False)
                 if page:
-                    final_list.append(page)
+                    for card in page:
+                        if card['link'] not in existing_lots_links:
+                            existing_lots_links.add(card['link'])
+                            final_list.append(card)
                     self.logger.info(f"Page {i} of {end_page} successfully parsed")
                 else:
                     self.logger.warning(f"Page {i} of {end_page} not parsed")
@@ -130,34 +142,44 @@ class AutoRuParser:
                 if i==99:
                     is_last_page = True
                     break
-            while is_last_page and scrolls > 0:
-                self.logger.info(f"Infinite scrolling started on last page: {scrolls}")
+
+            height_counter = 0
+            while is_last_page and len(final_list)<4100:
+                self.logger.info(f"Infinite scrolling started on last page, parsed {len(final_list)} items")
                 #To perform smooth scroll that is not detected: https://developer.mozilla.org/en-US/docs/Web/API/Window/scrollBy
                 #https: // www.geeksforgeeks.org / software - testing / selenium - scrolling - a - web - page /
                 #https://stackoverflow.com/questions/20986631/how-can-i-scroll-a-web-page-using-selenium-webdriver-in-python#27760083
                 #mess around with website protection to get all elements from last page with infinite scrolling
-                time.sleep(randint(5,30)/10)
-                self.driver.execute_script("window.scrollBy({top:"+str(randint(400,900))+",left:0, behaviour:'smooth'})")
+                height = self.driver.execute_script("return document.body.scrollHeight")
+                time.sleep(randint(1,5)/10)
+                self.driver.execute_script("window.scrollBy({top:"+str(randint(950,1750))+",left:0, behavior:'smooth'})")
                 chance = randint(0,100)
-                time.sleep(randint(4,15)/10)
-                if chance>50:
-                    self.driver.execute_script("window.scrollBy({top:"+str(randint(-100,-50))+",left:0, behaviour:'smooth'})")
-                if scrolls%11==0:
-                    page = self.get_page(parsed_page=self.driver.page_source)
-                    final_list.append(page)
-
-                scrolls -= 1
+                time.sleep(randint(1,5)/10)
+                if chance<10:
+                    self.driver.execute_script("window.scrollBy({top:"+str(randint(-100,-50))+",left:0, behavior:'smooth'})")
+                page = self.get_page(page_source=self.driver.page_source)
+                new_height = self.driver.execute_script("return document.body.scrollHeight")
+                if new_height==height:
+                    height_counter+=1
+                if height_counter==3:
+                    self.driver.execute_script("window.scrollBy({top:"+str(randint(-2500, -1800))+",left:0, behavior:'smooth'})")
+                    time.sleep(randint(1,5)/10)
+                    height_counter = 0
+                for card in page:
+                    if card['link'] not in existing_lots_links:
+                        existing_lots_links.add(card['link'])
+                        final_list.append(card)
         except Exception as e:
-            self.logger.error(f"Critical error while parsing: {e}")
+            self.logger.error(f"Error while parsing: {e}")
         finally:
-            self.logger.info(f"Parser have finished with the number of parsed pages: f{len(final_list)}")
-            self.save_backup(final_list,"cars_data.csv")
-
-
-
+            self.logger.info(f"Parser have finished with the number of parsed elements: {len(final_list)}")
+            self.save_backup(final_list,f=f)
 
 if __name__ == "__main__":
     a = AutoRuParser()
-    a.parse_to_dataframe(start_page=0,end_page=98)
+    #start parsing for 3 cities
+    cities = ("moskva", "sankt-peterburg","novosibirsk")
+    for city in cities:
+        a.parse_to_dataframe(start_page=0, end_page=99, f=f"cars_{city}.csv", city=city)
 
 
